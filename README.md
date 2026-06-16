@@ -19,6 +19,12 @@ O core é agnóstico. O desenvolvedor deve preencher as vtables de I/O e OS:
 ### 1. Preenchimento da HAL (FreeRTOS Example)
 
 ```c
+void meu_handler(const char* name, const uint8_t* payload, size_t len, const iot_request_context_t* req_ctx) {
+    if (strcmp(name, "open-door") == 0) {
+        printf("Abrindo porta. CorrID: %s\n", req_ctx->correlation_id);
+    }
+}
+
 iot_os_api_t my_os = {
     .mutex_create_static = xSemaphoreCreateBinaryStatic,
     .mutex_lock = xSemaphoreTake,
@@ -29,7 +35,8 @@ iot_os_api_t my_os = {
 iot_config_t config = {
     .client_id = "LOCKER-001",
     .os = my_os,
-    .net = my_net_provider
+    .net = my_net_provider,
+    .on_procedure = meu_handler
 };
 ```
 

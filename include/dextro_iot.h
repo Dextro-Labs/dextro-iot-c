@@ -27,13 +27,22 @@ typedef struct {
     int (*recv)(int socket_fd, uint8_t* buf, size_t len, uint32_t timeout_ms);
 } iot_net_api_t;
 
+/**
+ * @brief Contexto da requisição recebida pelo MQTT.
+ */
+typedef struct {
+    const char* correlation_id;
+    uint32_t timestamp;
+    // Permite expansão futura com headers
+} iot_request_context_t;
+
 typedef struct {
     const char* client_id;
     iot_os_api_t os;
     iot_net_api_t net;
     
     // Callbacks da aplicação
-    void (*on_procedure)(const char* name, const uint8_t* payload, size_t len);
+    void (*on_procedure)(const char* name, const uint8_t* payload, size_t len, const iot_request_context_t* req_ctx);
 } iot_config_t;
 
 /**
