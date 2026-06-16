@@ -57,6 +57,13 @@ if (iot_connect(&iot_ctx, "mqtt.dextro.com", 1883) == 0) {
 }
 ```
 
+### 3. Chamando Remote Procedures (Backend)
+
+```c
+const char* msg = "{\"userId\": \"123\"}";
+iot_push(&iot_ctx, "access-log", (const uint8_t*)msg, strlen(msg));
+```
+
 ## 🏗️ Build
 
 Pode ser compilada como biblioteca estática via `gcc` ou integrada no `CMake` do ESP-IDF / STM32Cube.

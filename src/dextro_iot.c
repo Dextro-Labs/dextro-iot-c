@@ -36,6 +36,10 @@ void iot_process(iot_context_t* ctx) {
     }
 }
 
-void iot_send_event(iot_context_t* ctx, const char* type, const uint8_t* data, size_t len) {
-    // Implementar publicação no tópico dextro/<id>/events
+void iot_push(iot_context_t* ctx, const char* procedure_name, const uint8_t* payload, size_t len) {
+    // Implementar publicação no tópico dextro/<id>/req/<procedure_name>
+}
+
+void iot_inbox_push(iot_context_t* ctx, const char* type, const uint8_t* data, size_t len) {
+    // Implementar lógica Mailbox
 }
