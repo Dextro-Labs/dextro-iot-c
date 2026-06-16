@@ -60,7 +60,7 @@ typedef struct {
 void iot_init(iot_context_t* ctx, const iot_config_t* config);
 int iot_connect(iot_context_t* ctx, const char* host, uint16_t port);
 void iot_process(iot_context_t* ctx);
-void iot_push(iot_context_t* ctx, const char* procedure_name, const uint8_t* payload, size_t len);
-void iot_inbox_push(iot_context_t* ctx, const char* type, const uint8_t* data, size_t len);
+int iot_push(iot_context_t* ctx, const char* procedure_name, const uint8_t* payload, size_t len);
+int iot_inbox_push(iot_context_t* ctx, const char* type, const uint8_t* data, size_t len);
 
 #endif // DEXTRO_IOT_C_H

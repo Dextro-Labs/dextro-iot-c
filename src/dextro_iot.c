@@ -36,10 +36,14 @@ void iot_process(iot_context_t* ctx) {
     }
 }
 
-void iot_push(iot_context_t* ctx, const char* procedure_name, const uint8_t* payload, size_t len) {
+int iot_push(iot_context_t* ctx, const char* procedure_name, const uint8_t* payload, size_t len) {
+    if (!ctx->is_connected) return -1;
     // Implementar publicação no tópico dextro/<id>/req/<procedure_name>
+    return 0;
 }
 
-void iot_inbox_push(iot_context_t* ctx, const char* type, const uint8_t* data, size_t len) {
+int iot_inbox_push(iot_context_t* ctx, const char* type, const uint8_t* data, size_t len) {
+    if (!ctx->is_connected) return -1;
     // Implementar lógica Mailbox
+    return 0;
 }
