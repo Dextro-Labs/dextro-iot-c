@@ -33,7 +33,8 @@ typedef struct {
 typedef struct {
     const char* correlation_id;
     uint32_t timestamp;
-    // Permite expansão futura com headers
+    const char* metadata; // JSON com metadados injetados pelo backend
+    size_t metadata_len;
 } iot_request_context_t;
 
 typedef struct {

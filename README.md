@@ -22,6 +22,9 @@ O core é agnóstico. O desenvolvedor deve preencher as vtables de I/O e OS:
 void meu_handler(const char* name, const uint8_t* payload, size_t len, const iot_request_context_t* req_ctx) {
     if (strcmp(name, "open-door") == 0) {
         printf("Abrindo porta. CorrID: %s\n", req_ctx->correlation_id);
+        if (req_ctx->metadata_len > 0) {
+            printf("Metadata recebido: %.*s\n", (int)req_ctx->metadata_len, req_ctx->metadata);
+        }
     }
 }
 
