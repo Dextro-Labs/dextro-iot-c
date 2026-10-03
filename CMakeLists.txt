@@ -5,9 +5,10 @@ include(${CMAKE_CURRENT_LIST_DIR}/cmake/dextro_iot_sources.cmake)
 # Consumido como componente ESP-IDF (submódulo em components/ do firmware).
 if(ESP_PLATFORM)
     idf_component_register(
-        SRCS ${DEXTRO_IOT_CORE_SOURCES}
-        INCLUDE_DIRS ${DEXTRO_IOT_PUBLIC_INCLUDES}
+        SRCS ${DEXTRO_IOT_CORE_SOURCES} ${DEXTRO_IOT_ESP_SOURCES}
+        INCLUDE_DIRS ${DEXTRO_IOT_PUBLIC_INCLUDES} port/esp-idf/include
         PRIV_INCLUDE_DIRS ${DEXTRO_IOT_PRIVATE_INCLUDES}
+        PRIV_REQUIRES esp-tls esp_timer esp_hw_support log lwip
     )
     target_compile_definitions(${COMPONENT_LIB} PUBLIC ${DEXTRO_IOT_PUBLIC_DEFINITIONS})
     return()
@@ -33,8 +34,10 @@ set_target_properties(dextro_iot_c PROPERTIES C_EXTENSIONS OFF)
 
 if(PROJECT_IS_TOP_LEVEL)
     target_compile_options(dextro_iot_c PRIVATE -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Werror)
-    # jsmn é código de terceiro: não passa no -Wconversion e não é nosso para corrigir.
-    set_source_files_properties(src/json/jsmn_impl.c PROPERTIES COMPILE_OPTIONS "-Wno-conversion;-Wno-sign-conversion")
+    # jsmn e coreMQTT são código de terceiro: não passam no -Wconversion e não
+    # são nossos para corrigir.
+    set_source_files_properties(${DEXTRO_IOT_THIRD_PARTY_SOURCES}
+        PROPERTIES COMPILE_OPTIONS "-w")
 endif()
 
 if(DEXTRO_IOT_BUILD_TESTS)
