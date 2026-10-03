@@ -1,0 +1,5 @@
+version: "0.1.0"
+description: "Cliente C do protocolo Dextro IoT (MQTT) para MCU"
+url: "https://github.com/Dextro-Labs/dextro-iot-c"
+dependencies:
+  idf: ">=5.3"

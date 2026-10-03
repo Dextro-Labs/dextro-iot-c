@@ -1,0 +1,9 @@
+[submodule "external/coreMQTT"]
+	path = external/coreMQTT
+	url = https://github.com/FreeRTOS/coreMQTT.git
+[submodule "external/jsmn"]
+	path = external/jsmn
+	url = https://github.com/zserge/jsmn.git
+[submodule "external/unity"]
+	path = external/unity
+	url = https://github.com/ThrowTheSwitch/Unity.git
