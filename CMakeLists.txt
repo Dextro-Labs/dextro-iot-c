@@ -11,6 +11,8 @@ if(ESP_PLATFORM)
         PRIV_REQUIRES esp-tls esp_timer esp_hw_support log lwip
     )
     target_compile_definitions(${COMPONENT_LIB} PUBLIC ${DEXTRO_IOT_PUBLIC_DEFINITIONS})
+    # jsmn e coreMQTT: código de terceiro, sem os nossos avisos
+    set_source_files_properties(${DEXTRO_IOT_THIRD_PARTY_SOURCES} PROPERTIES COMPILE_OPTIONS "-w")
     return()
 endif()
 
