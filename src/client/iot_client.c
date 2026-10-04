@@ -618,6 +618,8 @@ static void outbox_ack_fill(iot_client_t *c, iot_json_writer_t *w, void *user)
     iot_jw_arr_end(w);
 }
 
+#define OUTBOX_RETRY_MS 10000u
+
 static void outbox_ack_reply(iot_client_t *c, int rescode, const iot_json_doc_t *doc, iot_json_ref_t payload,
                              void *user)
 {
@@ -639,8 +641,10 @@ static void outbox_read_reply(iot_client_t *c, int rescode, const iot_json_doc_t
 {
     (void)user;
     if (doc == NULL || !iot_rescode_is_success(rescode)) {
-        logf_(c, IOT_LOG_WARN, "outbox-read sem resposta (%d)", rescode);
+        logf_(c, IOT_LOG_WARN, "outbox-read sem resposta (%d); nova tentativa em ~%u s", rescode,
+              (unsigned)(OUTBOX_RETRY_MS / 1000u));
         c->outbox_busy = false;
+        c->next_outbox_ms = mono(c) + OUTBOX_RETRY_MS + (rnd32(c) % 5000u);
         return;
     }
     const iot_json_ref_t items = iot_json_get(doc, payload, "items");
@@ -683,7 +687,10 @@ void iot_outbox_drain_now(iot_client_t *c)
 
 static void outbox_step(iot_client_t *c, uint64_t now)
 {
-    if (c->cfg.on_outbox_item == NULL || c->outbox_busy || now < c->next_outbox_ms) {
+    /* sem hora (nem SNTP nem a do servidor) o request sai com timestamp
+     * inválido e o backend devolve 504 TTL_EXPIRED: espera a primeira
+     * resposta do servidor (keepalive) ensinar o relógio */
+    if (c->cfg.on_outbox_item == NULL || c->outbox_busy || now < c->next_outbox_ms || iot_now_epoch_ms(c) <= 0) {
         return;
     }
     c->next_outbox_ms = now + (c->cfg.outbox_poll_ms > 0 ? c->cfg.outbox_poll_ms : 300000u);

@@ -713,6 +713,57 @@ static void test_outbox_notification_triggers_drain(void)
     TEST_ASSERT_EQUAL_INT(0, outbox_calls);
 }
 
+static void test_outbox_waits_for_clock(void)
+{
+    wall_ms = 0; /* sem SNTP: só a hora do servidor serve */
+    client_init();
+    bring_online();
+    now_ms += 4000;
+    iot_step(&client);
+    char req[2048];
+    /* só o keepalive sai; nada de outbox-read sem hora */
+    char ka[2048] = "";
+    char topic[128];
+    while (tx_next_publish(topic, sizeof(topic), req, sizeof(req), NULL)) {
+        TEST_ASSERT_NULL(strstr(req, "\"op\":\"outbox-read\""));
+        if (strstr(req, "\"op\":\"keepalive\"") != NULL) {
+            strcpy(ka, req);
+        }
+    }
+    TEST_ASSERT_NOT_EQUAL(0, ka[0]);
+    const char *rel = strstr(ka, "\"relationId\":\"") + 14;
+    char relation[40];
+    memcpy(relation, rel, 36);
+    relation[36] = '\0';
+    char reply[512];
+    snprintf(reply, sizeof(reply),
+             "{\"metadata\":{\"v\":\"0.5\",\"messageId\":\"x\",\"relationId\":\"%s\",\"timestamp\":1790000000000,"
+             "\"serialNumber\":\"" SN "\",\"instance\":\"svc-iot-devices-pod-1\"},\"op\":\"keepalive\","
+             "\"payload\":{\"serverTime\":1790000000500},\"rescode\":200}",
+             relation);
+    rx_publish("atrio/" SN "/service/reply", reply);
+    iot_step(&client);
+    iot_step(&client);
+    TEST_ASSERT_TRUE(next_service("outbox-read", req, sizeof(req)));
+}
+
+static void test_outbox_read_failure_retries_soon(void)
+{
+    bring_online();
+    now_ms += 4000;
+    iot_step(&client);
+    char req[2048];
+    TEST_ASSERT_TRUE(next_service("outbox-read", req, sizeof(req)));
+    reply_service(req, "outbox-read", 504, "{\"error\":\"TTL_EXPIRED\"}");
+    iot_step(&client);
+    now_ms += 5000;
+    iot_step(&client);
+    TEST_ASSERT_FALSE(next_service("outbox-read", req, sizeof(req)));
+    now_ms += 11000; /* 10 s + até 5 s de sorteio, bem antes do poll de 5 min */
+    iot_step(&client);
+    TEST_ASSERT_TRUE(next_service("outbox-read", req, sizeof(req)));
+}
+
 static void applied_fill(iot_client_t *c, iot_json_writer_t *w, void *user)
 {
     (void)c;
@@ -753,5 +804,7 @@ int main(void)
     RUN_TEST(test_outbox_drained_on_connect_with_ack_and_reject);
     RUN_TEST(test_outbox_notification_triggers_drain);
     RUN_TEST(test_inbox_write_shape);
+    RUN_TEST(test_outbox_waits_for_clock);
+    RUN_TEST(test_outbox_read_failure_retries_soon);
     return UNITY_END();
 }
