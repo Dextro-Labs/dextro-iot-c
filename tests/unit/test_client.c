@@ -137,6 +137,25 @@ static int relay_set(iot_client_t *c, const iot_request_t *req, iot_json_writer_
     return IOT_RES_OK;
 }
 
+static int outbox_calls;
+static char outbox_last_cmd[32];
+
+static bool on_outbox(iot_client_t *c, const iot_json_doc_t *doc, iot_json_ref_t item, const char *command,
+                      char *reason, size_t cap, void *user)
+{
+    (void)c;
+    (void)doc;
+    (void)item;
+    (void)user;
+    outbox_calls++;
+    snprintf(outbox_last_cmd, sizeof(outbox_last_cmd), "%s", command);
+    if (strcmp(command, "settings-write") == 0) {
+        return true;
+    }
+    snprintf(reason, cap, "UNKNOWN_COMMAND");
+    return false;
+}
+
 static const iot_procedure_t app_ops[] = {
     {.op = "relay-set", .version = 2, .handler = relay_set, .flags = IOT_OP_IDEMPOTENCY_KEY},
 };
@@ -164,6 +183,7 @@ static void client_init(void)
         .contract_version = 1,
         .status_fill = status_fill,
         .on_event = on_event,
+        .on_outbox_item = on_outbox,
     };
     TEST_ASSERT_EQUAL(IOT_OK, iot_init(&client, &cfg));
     TEST_ASSERT_EQUAL(IOT_OK, iot_start(&client));
@@ -178,6 +198,7 @@ void setUp(void)
     wall_ms = 1790000000000LL;
     memset(events, 0, sizeof(events));
     handler_calls = 0;
+    outbox_calls = 0;
     client_init();
 }
 
@@ -364,6 +385,38 @@ static void call_procedure(const char *req, char *reply, size_t cap)
     TEST_ASSERT_EQUAL_STRING("atrio/" SN "/procedure/reply/svc-iot-devices-pod-1", topic);
 }
 
+/* responde o último request publicado em service com `payload` */
+static void reply_service(const char *request_json, const char *op, int rescode, const char *payload)
+{
+    const char *rel = strstr(request_json, "\"relationId\":\"");
+    TEST_ASSERT_NOT_NULL(rel);
+    rel += 14;
+    char relation[40];
+    memcpy(relation, rel, 36);
+    relation[36] = '\0';
+    char reply[2048];
+    snprintf(reply, sizeof(reply),
+             "{\"metadata\":{\"v\":\"0.5\",\"messageId\":\"x\",\"relationId\":\"%s\",\"timestamp\":%lld,"
+             "\"serialNumber\":\"" SN "\",\"instance\":\"svc-iot-devices-pod-1\"},\"op\":\"%s\","
+             "\"payload\":%s,\"rescode\":%d}",
+             relation, (long long)(wall_ms + (int64_t)now_ms), op, payload, rescode);
+    rx_publish("atrio/" SN "/service/reply", reply);
+}
+
+/* próximo request de service com essa op (pula os outros, ex.: keepalive) */
+static bool next_service(const char *op, char *payload, size_t cap)
+{
+    char topic[128];
+    char needle[64];
+    snprintf(needle, sizeof(needle), "\"op\":\"%s\"", op);
+    while (tx_next_publish(topic, sizeof(topic), payload, cap, NULL)) {
+        if (strcmp(topic, "atrio/" SN "/service") == 0 && strstr(payload, needle) != NULL) {
+            return true;
+        }
+    }
+    return false;
+}
+
 /* ------------------------------------------------------------------ testes */
 
 static void test_connect_publishes_will_and_online(void)
@@ -509,10 +562,8 @@ static void test_keepalive_learns_server_clock(void)
     TEST_ASSERT_EQUAL_INT64(0, iot_now_epoch_ms(&client));
     now_ms += 2500; /* primeiro keepalive sai em até 2 s */
     iot_step(&client);
-    char topic[128], payload[1024];
-    TEST_ASSERT_TRUE(tx_next_publish(topic, sizeof(topic), payload, sizeof(payload), NULL));
-    TEST_ASSERT_EQUAL_STRING("atrio/" SN "/service", topic);
-    TEST_ASSERT_NOT_NULL(strstr(payload, "\"op\":\"keepalive\""));
+    char payload[1024];
+    TEST_ASSERT_TRUE(next_service("keepalive", payload, sizeof(payload)));
     TEST_ASSERT_NOT_NULL(strstr(payload, "\"intervalMs\":60000"));
     TEST_ASSERT_NOT_NULL(strstr(payload, "\"instance\":\"" SN "\""));
     /* resposta com o relationId do request */
@@ -621,6 +672,65 @@ static void test_stop_publishes_offline(void)
     TEST_ASSERT_EQUAL(IOT_STATE_STOPPED, iot_state(&client));
 }
 
+static void test_outbox_drained_on_connect_with_ack_and_reject(void)
+{
+    bring_online();
+    now_ms += 4000; /* dreno sorteado em até 3,5 s */
+    iot_step(&client);
+    char req[2048];
+    TEST_ASSERT_TRUE(next_service("outbox-read", req, sizeof(req)));
+    TEST_ASSERT_NOT_NULL(strstr(req, "\"limit\":5"));
+    reply_service(req, "outbox-read", 200,
+                  "{\"count\":2,\"items\":["
+                  "{\"id\":\"11111111-1111-4111-8111-111111111111\",\"command\":\"settings-write\",\"entity\":\"settings\","
+                  "\"entityId\":\"d\",\"payload\":{\"version\":2,\"settings\":[]},\"createdAt\":1,\"leaseUntil\":2},"
+                  "{\"id\":\"22222222-2222-4222-8222-222222222222\",\"command\":\"plans-put\",\"entity\":\"plans\","
+                  "\"entityId\":\"d\",\"payload\":{},\"createdAt\":1,\"leaseUntil\":2}]}");
+    iot_step(&client);
+    TEST_ASSERT_EQUAL_INT(2, outbox_calls);
+    TEST_ASSERT_TRUE(next_service("outbox-ack", req, sizeof(req)));
+    TEST_ASSERT_NOT_NULL(strstr(req, "\"ids\":[\"11111111-1111-4111-8111-111111111111\"]"));
+    TEST_ASSERT_NOT_NULL(strstr(req, "\"rejects\":[{\"id\":\"22222222-2222-4222-8222-222222222222\",\"reason\":\"UNKNOWN_COMMAND\"}]"));
+    reply_service(req, "outbox-ack", 200, "{\"acknowledged\":1,\"rejected\":1}");
+    iot_step(&client);
+    /* lote menor que o limite: não lê de novo agora */
+    now_ms += 10;
+    iot_step(&client);
+    TEST_ASSERT_FALSE(next_service("outbox-read", req, sizeof(req)));
+}
+
+static void test_outbox_notification_triggers_drain(void)
+{
+    bring_online();
+    char reply[2048];
+    call_procedure(make_request("outbox-notification", "{\"entities\":[\"settings\"],\"size\":1}", wall_now(), "0.5"),
+                   reply, sizeof(reply));
+    iot_step(&client);
+    char req[2048];
+    TEST_ASSERT_TRUE(next_service("outbox-read", req, sizeof(req)));
+    reply_service(req, "outbox-read", 200, "{\"count\":0,\"items\":[]}");
+    iot_step(&client);
+    TEST_ASSERT_EQUAL_INT(0, outbox_calls);
+}
+
+static void applied_fill(iot_client_t *c, iot_json_writer_t *w, void *user)
+{
+    (void)c;
+    (void)user;
+    iot_jw_key(w, "appliedVersion");
+    iot_jw_u64(w, 7);
+}
+
+static void test_inbox_write_shape(void)
+{
+    bring_online();
+    TEST_ASSERT_EQUAL(IOT_OK, iot_inbox_write(&client, "settings-applied", "settings", 7, applied_fill, NULL, NULL, NULL));
+    char req[2048];
+    TEST_ASSERT_TRUE(next_service("inbox-write", req, sizeof(req)));
+    TEST_ASSERT_NOT_NULL(strstr(req, "\"payload\":{\"entity\":\"settings-applied\",\"entityId\":\"settings\",\"version\":7,"
+                                      "\"payload\":{\"appliedVersion\":7}}"));
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -640,5 +750,8 @@ int main(void)
     RUN_TEST(test_backoff_grows_while_connect_fails);
     RUN_TEST(test_suback_refused_drops);
     RUN_TEST(test_stop_publishes_offline);
+    RUN_TEST(test_outbox_drained_on_connect_with_ack_and_reject);
+    RUN_TEST(test_outbox_notification_triggers_drain);
+    RUN_TEST(test_inbox_write_shape);
     return UNITY_END();
 }

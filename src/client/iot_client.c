@@ -288,7 +288,8 @@ static int core_dispatch(iot_client_t *c, const iot_request_t *req, iot_json_wri
         return IOT_RES_OK;
     }
     if (strcmp(req->op, "outbox-notification") == 0) {
-        /* best-effort: só avisa a aplicação para drenar (contracts A.4.4) */
+        /* best-effort (contracts A.4.4): drena já e avisa a aplicação */
+        c->next_outbox_ms = 0;
         emit(c, IOT_EVENT_OUTBOX_NOTIFIED);
         iot_jw_obj_begin(out);
         iot_jw_obj_end(out);
@@ -581,6 +582,156 @@ void iot_keepalive_now(iot_client_t *c)
     c->next_keepalive_ms = 0;
 }
 
+/* ----------------------------------------------------------------- outbox */
+
+static void outbox_read_fill(iot_client_t *c, iot_json_writer_t *w, void *user)
+{
+    (void)c;
+    (void)user;
+    iot_jw_key(w, "limit");
+    iot_jw_u64(w, IOT_OUTBOX_LIMIT);
+}
+
+static void outbox_ack_fill(iot_client_t *c, iot_json_writer_t *w, void *user)
+{
+    (void)user;
+    iot_jw_key(w, "ids");
+    iot_jw_arr_begin(w);
+    for (size_t i = 0; i < c->outbox_n; i++) {
+        if (c->outbox_reject[i][0] == '\0') {
+            iot_jw_str(w, c->outbox_ids[i]);
+        }
+    }
+    iot_jw_arr_end(w);
+    iot_jw_key(w, "rejects");
+    iot_jw_arr_begin(w);
+    for (size_t i = 0; i < c->outbox_n; i++) {
+        if (c->outbox_reject[i][0] != '\0') {
+            iot_jw_obj_begin(w);
+            iot_jw_key(w, "id");
+            iot_jw_str(w, c->outbox_ids[i]);
+            iot_jw_key(w, "reason");
+            iot_jw_str(w, c->outbox_reject[i]);
+            iot_jw_obj_end(w);
+        }
+    }
+    iot_jw_arr_end(w);
+}
+
+static void outbox_ack_reply(iot_client_t *c, int rescode, const iot_json_doc_t *doc, iot_json_ref_t payload,
+                             void *user)
+{
+    (void)doc;
+    (void)payload;
+    const bool full = (bool)(uintptr_t)user;
+    c->outbox_busy = false;
+    if (!iot_rescode_is_success(rescode)) {
+        logf_(c, IOT_LOG_WARN, "outbox-ack recusado (%d); os itens voltam depois do lease", rescode);
+        return;
+    }
+    if (full) {
+        c->next_outbox_ms = 0; /* veio lote cheio: pode haver mais */
+    }
+}
+
+static void outbox_read_reply(iot_client_t *c, int rescode, const iot_json_doc_t *doc, iot_json_ref_t payload,
+                              void *user)
+{
+    (void)user;
+    if (doc == NULL || !iot_rescode_is_success(rescode)) {
+        logf_(c, IOT_LOG_WARN, "outbox-read sem resposta (%d)", rescode);
+        c->outbox_busy = false;
+        return;
+    }
+    const iot_json_ref_t items = iot_json_get(doc, payload, "items");
+    const int n = iot_json_size(doc, items);
+    c->outbox_n = 0;
+    for (int i = 0; i < n && c->outbox_n < IOT_OUTBOX_LIMIT; i++) {
+        const iot_json_ref_t item = iot_json_at(doc, items, i);
+        char command[64] = "";
+        char *id = c->outbox_ids[c->outbox_n];
+        char *reason = c->outbox_reject[c->outbox_n];
+        if (iot_json_get_str(doc, iot_json_get(doc, item, "id"), id, IOT_UUID_LEN + 1, NULL) != IOT_OK) {
+            continue; /* sem id não há como confirmar */
+        }
+        iot_json_get_str(doc, iot_json_get(doc, item, "command"), command, sizeof(command), NULL);
+        reason[0] = '\0';
+        const bool ok = c->cfg.on_outbox_item(c, doc, item, command, reason, IOT_REJECT_MAX, c->cfg.user);
+        if (!ok && reason[0] == '\0') {
+            snprintf(reason, IOT_REJECT_MAX, "REJECTED");
+        } else if (ok) {
+            reason[0] = '\0';
+        }
+        logf_(c, IOT_LOG_INFO, "outbox %s (%s): %s", id, command, ok ? "aplicado" : reason);
+        c->outbox_n++;
+    }
+    if (c->outbox_n == 0) {
+        c->outbox_busy = false;
+        return;
+    }
+    const bool full = n >= (int)IOT_OUTBOX_LIMIT;
+    if (iot_call_service(c, "outbox-ack", outbox_ack_fill, NULL, outbox_ack_reply, (void *)(uintptr_t)full, 0) !=
+        IOT_OK) {
+        c->outbox_busy = false; /* sem ack os itens voltam depois do lease */
+    }
+}
+
+void iot_outbox_drain_now(iot_client_t *c)
+{
+    c->next_outbox_ms = 0;
+}
+
+static void outbox_step(iot_client_t *c, uint64_t now)
+{
+    if (c->cfg.on_outbox_item == NULL || c->outbox_busy || now < c->next_outbox_ms) {
+        return;
+    }
+    c->next_outbox_ms = now + (c->cfg.outbox_poll_ms > 0 ? c->cfg.outbox_poll_ms : 300000u);
+    if (iot_call_service(c, "outbox-read", outbox_read_fill, NULL, outbox_read_reply, NULL, 0) == IOT_OK) {
+        c->outbox_busy = true;
+    }
+}
+
+/* ------------------------------------------------------------------ inbox */
+
+typedef struct {
+    const char *entity;
+    const char *entity_id;
+    int64_t version;
+    iot_fill_cb fill;
+    void *fill_user;
+} inbox_args_t;
+
+static void inbox_fill(iot_client_t *c, iot_json_writer_t *w, void *user)
+{
+    const inbox_args_t *a = user;
+    iot_jw_key(w, "entity");
+    iot_jw_str(w, a->entity);
+    iot_jw_key(w, "entityId");
+    iot_jw_str(w, a->entity_id);
+    if (a->version >= 0) {
+        iot_jw_key(w, "version");
+        iot_jw_i64(w, a->version);
+    }
+    iot_jw_key(w, "payload");
+    iot_jw_obj_begin(w);
+    if (a->fill != NULL) {
+        a->fill(c, w, a->fill_user);
+    }
+    iot_jw_obj_end(w);
+}
+
+iot_err_t iot_inbox_write(iot_client_t *c, const char *entity, const char *entity_id, int64_t version,
+                          iot_fill_cb fill, void *fill_user, iot_reply_cb cb, void *user)
+{
+    if (entity == NULL || entity_id == NULL) {
+        return IOT_ERR_ARG;
+    }
+    /* o pedido é montado na hora: os argumentos podem morar na pilha */
+    inbox_args_t a = {.entity = entity, .entity_id = entity_id, .version = version, .fill = fill, .fill_user = fill_user};
+    return iot_call_service(c, "inbox-write", inbox_fill, &a, cb, user, 0);
+}
+
 /* --------------------------------------------------------------- sessão */
 
 static void drop(iot_client_t *c, const char *why)
@@ -673,8 +824,11 @@ static void become_online(iot_client_t *c)
     c->state = IOT_STATE_ONLINE;
     c->backoff_ms = BACKOFF_MIN_MS;
     c->connects++;
-    /* primeiro keepalive logo, com um pequeno sorteio (evita a manada) */
+    /* primeiro keepalive logo, com um pequeno sorteio (evita a manada); a
+     * outbox é drenada a cada conexão (spec §6), também com sorteio */
     c->next_keepalive_ms = mono(c) + (rnd32(c) % 2000u);
+    c->outbox_busy = false;
+    c->next_outbox_ms = mono(c) + 500u + (rnd32(c) % 3000u);
     logf_(c, IOT_LOG_INFO, "online em %s:%u como %s", c->cfg.host, c->cfg.port, c->cfg.serial);
     emit(c, IOT_EVENT_ONLINE);
 }
@@ -775,6 +929,10 @@ void iot_step(iot_client_t *c)
         return; /* a resposta derrubou a sessão */
     }
     expire_pending(c, false, IOT_RES_TIMEOUT);
+    outbox_step(c, now);
+    if (c->state != IOT_STATE_ONLINE) {
+        return;
+    }
     if (now >= c->next_keepalive_ms) {
         c->next_keepalive_ms = now + c->cfg.app_keepalive_ms;
         const iot_err_t err = iot_call_service(c, "keepalive", keepalive_payload, NULL, keepalive_reply, NULL, 0);

@@ -38,6 +38,11 @@ extern "C" {
 #define IOT_IDEM_RESP_MAX 384u
 #endif
 
+#ifndef IOT_OUTBOX_LIMIT
+#define IOT_OUTBOX_LIMIT 5u /* itens por outbox-read (cabem no buffer de entrada) */
+#endif
+#define IOT_REJECT_MAX 96
+
 #define IOT_SN_LEN 12
 #define IOT_UUID_LEN 36
 #define IOT_TOPIC_MAX 128
@@ -65,6 +70,13 @@ typedef struct iot_client iot_client_t;
  * (timeout local: rescode 504) ou quando a sessão caiu (503). */
 typedef void (*iot_reply_cb)(iot_client_t *c, int rescode, const iot_json_doc_t *doc, iot_json_ref_t payload,
                              void *user);
+
+/* Item da outbox (contracts A.3.4): `item` é o objeto {id, command, entity,
+ * entityId, payload, ...} dentro de `doc`. Devolve true se aplicou (vira
+ * ack) ou false com o motivo em `reason` (vira reject). A aplicação DEVE ser
+ * idempotente por id: um item sem ack volta depois do lease. */
+typedef bool (*iot_outbox_item_cb)(iot_client_t *c, const iot_json_doc_t *doc, iot_json_ref_t item,
+                                   const char *command, char *reason, size_t reason_cap, void *user);
 
 /* Escreve membros adicionais (chave + valor) dentro de um objeto já aberto. */
 typedef void (*iot_fill_cb)(iot_client_t *c, iot_json_writer_t *w, void *user);
@@ -101,6 +113,10 @@ typedef struct {
     uint32_t connect_timeout_ms; /* 0 = 10000 */
 
     iot_fill_cb keepalive_fill; /* campos do keepalive (uptimeS, fwVersion, ...) */
+    /* outbox: drenada no connect, no outbox-notification e a cada
+     * outbox_poll_ms (0 = 300000). Sem callback, a lib não drena. */
+    iot_outbox_item_cb on_outbox_item;
+    uint32_t outbox_poll_ms;
     iot_fill_cb status_fill;    /* get-status padrão */
     void (*on_event)(iot_client_t *c, iot_event_t ev, void *user);
     void *user;
@@ -146,6 +162,12 @@ struct iot_client {
     char topic_service_reply[IOT_TOPIC_MAX];
     char topic_status[IOT_TOPIC_MAX];
     uint32_t connects;  /* sessões abertas desde o init (diagnóstico) */
+    /* dreno da outbox */
+    bool outbox_busy;
+    uint64_t next_outbox_ms;
+    size_t outbox_n;
+    char outbox_ids[IOT_OUTBOX_LIMIT][IOT_UUID_LEN + 1];
+    char outbox_reject[IOT_OUTBOX_LIMIT][IOT_REJECT_MAX]; /* vazio = ack */
 };
 
 iot_err_t iot_init(iot_client_t *c, const iot_config_t *cfg);
@@ -170,6 +192,15 @@ iot_err_t iot_call_service(iot_client_t *c, const char *op, iot_fill_cb fill, vo
 
 /* Força um keepalive agora (ex.: logo após trocar o certificado). */
 void iot_keepalive_now(iot_client_t *c);
+
+/* Pede um dreno da outbox no próximo iot_step (se online). */
+void iot_outbox_drain_now(iot_client_t *c);
+
+/* inbox-write (contracts A.3.3): entrega confiável device → backend,
+ * idempotente por (entity, entityId, version). `fill` escreve os membros do
+ * payload interno; version < 0 = omitido. */
+iot_err_t iot_inbox_write(iot_client_t *c, const char *entity, const char *entity_id, int64_t version,
+                          iot_fill_cb fill, void *fill_user, iot_reply_cb cb, void *user);
 
 #ifdef __cplusplus
 }
