@@ -126,11 +126,12 @@ procedure.
 | op | Request | Resposta | Timeout do backend |
 |---|---|---|---|
 | `list-procedures` | `{}` (nenhuma propriedade) | 200 `{procedures:[{op, version?}], deviceType?, contractVersion?}`: **objetos**, sem chave extra | 30 s |
-| `get-status` | `{sections?: string[]}` | 200 com objeto livre. Chaves recomendadas = as do keepalive | 30 s |
+| `get-status` | `{sections?: string[]}` | 200 com objeto livre. Chave de primeiro nível igual à `key` de uma tag do tipo é o valor relatado dela; o resto são dados auxiliares (versão, metadados, rotinas), permitidos e só no histórico. Chaves recomendadas = as do keepalive | 30 s |
 | `ota-notification` | `{version, artifactName, artifactUrl(https), sha256, signature?, signingKeyId?, sizeBytes?, artifactFormat?, applyAfter?, campaignItemId, progressEntityId?}` | `202 {}`, ou `200 {alreadyInstalled:true}`, ou 400 (`SIGNATURE_INVALID`, `CHECKSUM_INVALID`…), que vira falha sem retry | 30 s |
 | `outbox-notification` | exatamente `{entities: string[], size: int}` | **`204 {}`** e dispara o dreno | 10 s |
 | `settings-read` | `{refs?, offset?, limit?}` | 200 `{version, settings}` | 30 s |
 | `settings-write` | `{version, settings}`, coleção completa | 200 `{appliedVersion, rejected:[{ref, reason}]}`. Versão menor dá 409 `STALE_VERSION` | 60 s |
+| `tags-write` | `{version, desired}`, só as tags a mudar | 200 `{appliedVersion, rejected:[{key, reason}]}`, com `reason` `UNKNOWN_TAG`, `READ_ONLY`, `INVALID_VALUE` ou `APPLY_FAILED`. Mesma versão é idempotente; menor dá 409 `STALE_VERSION`. Offline: outbox `tags-write` + inbox `tags-applied` | 30 s |
 | `certificate-request` | `{requestId, reason: initial\|renewal\|revoked, keyType:"EC-P256"}` | 200 `{requestId, csrPem}` (até 8 KB). Par de chaves novo a cada request; CSR com CN=SN, sem SAN, só `keyUsage` + `extendedKeyUsage=clientAuth`; `requestId` repetido devolve o mesmo CSR | 120 s |
 | `certificate-install` | `{certificateId, certPem (≤8 KB), chainPem (≤16 KB), notAfter}` | 200 `{installed:true, fingerprint}` e reconecta com o certificado novo | 60 s |
 

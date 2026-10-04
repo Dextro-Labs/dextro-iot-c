@@ -12,11 +12,11 @@ fala com o backend `dextrolabs-device` por MQTT 3.1.1 + mTLS.
 
 | Fase | Conteúdo | Situação |
 |---|---|---|
-| 1 | Esqueleto, build host + ESP-IDF, CI, JSON estático | **este PR** |
-| 2 | Envelope, dispatch de device-procedures, ops do core | a fazer |
-| 3 | Sessão MQTT (coreMQTT), reconexão, presença/LWT, keepalive, port POSIX | a fazer |
+| 1 | Esqueleto, build host + ESP-IDF, CI, JSON estático | feito |
+| 2 | Envelope, dispatch de device-procedures, ops do core | **feito** |
+| 3 | Sessão MQTT (coreMQTT), reconexão, presença/LWT, keepalive | **feito** (port POSIX fica para a fase 4) |
 | 4 | Outbox, inbox, events, settings, OTA; device POSIX e integração com o backend real | a fazer |
-| 5 | Port ESP-IDF (esp-tls, NVS) e exemplo na placa | a fazer |
+| 5 | Port ESP-IDF (esp-tls, NVS) e exemplo na placa | transporte mTLS, relógio, RNG e log **feitos**; NVS e exemplo a fazer |
 | 6 | `certificate-request` / `certificate-install` (CSR gerada no device) | a fazer |
 
 A API antiga (`iot_connect`/`iot_push`) foi removida. Ela não falava MQTT e
@@ -100,6 +100,51 @@ iot_jw_i64(&w, 42);
 iot_jw_obj_end(&w);
 if (iot_jw_finish(&w, NULL) != IOT_OK) { /* não coube */ }
 ```
+
+## Cliente (`iot.h`)
+
+A aplicação preenche as vtables e os buffers e chama `iot_step()` a cada
+~20 ms numa task só, que é a dona do cliente.
+
+```c
+iot_config_t cfg = {
+    .serial = "6809479F5758", .host = "mqtt.dextrolabs.com.br", .port = 8883,
+    .net_buf = net, .net_len = sizeof(net), .out_buf = out, .out_len = sizeof(out),
+    .in_buf = in, .in_len = sizeof(in), .toks = toks, .ntoks = 512,
+    .procedures = ops, .procedure_count = 3, .device_type = "gateway-g1",
+    .keepalive_fill = fill_keepalive, .status_fill = fill_status, .on_event = on_event,
+};
+iot_esp_transport(&tls, &cfg.transport);   /* port/esp-idf */
+iot_esp_clock(&cfg.clock);
+iot_esp_rng(&cfg.rng);
+iot_init(&client, &cfg);
+iot_start(&client);
+for (;;) { iot_step(&client); vTaskDelay(pdMS_TO_TICKS(20)); }
+```
+
+- **Sessão:**
+  - clientId = SN; LWT retido `{"online":false}`;
+  - assina só `procedure` e `service/reply`; `{"online":true}` retido a cada
+    conexão;
+  - keepalive MQTT de 15 s; a falta de PINGRESP derruba a sessão;
+  - backoff de 1 s a 60 s com jitter.
+- **Device-procedures:**
+  - valida o envelope; TTL de 60 s responde 504 `TTL_EXPIRED`, sem descartar;
+  - op desconhecida responde 404 `UNKNOWN_OP`;
+  - ecoa `relationId`, `instance` e `traceparent`;
+  - ops com `IOT_OP_IDEMPOTENCY_KEY` não reexecutam o mesmo `idempotencyKey`.
+- **Ops do core:**
+  - `list-procedures`, `get-status` (`status_fill`), `outbox-notification`
+    (responde 204 e emite `IOT_EVENT_OUTBOX_NOTIFIED`) e `settings-read`.
+  - `settings-write` e `ota-notification` respondem 400 `NOT_SUPPORTED`.
+  - `tags-write` (obrigatória) aceita a versão e recusa cada tag pedida com
+    `UNKNOWN_TAG`, que é o certo para firmware sem tag gravável; payload
+    inválido dá 400 `INVALID_PAYLOAD`.
+  - Uma entrada da aplicação com o mesmo nome substitui a do core.
+- **Remote-procedures:** `iot_call_service` não bloqueia. A resposta chega por
+  callback; o timeout local dá 504 e a queda da sessão dá 503 na hora.
+- **Relógio:** sem SNTP, a hora vem de qualquer mensagem do servidor e é
+  refinada pelo `serverTime` do `keepalive`.
 
 ## Roteiro
 
