@@ -232,8 +232,9 @@ static const iot_procedure_t *find_app_op(iot_client_t *c, const char *op)
     return NULL;
 }
 
-static const char *const k_core_ops[] = {"list-procedures", "get-status", "outbox-notification",
-                                         "ota-notification", "settings-read", "settings-write"};
+static const char *const k_core_ops[] = {"list-procedures",  "get-status",    "outbox-notification",
+                                         "ota-notification", "settings-read", "settings-write",
+                                         "tags-write"};
 #define CORE_OPS (sizeof(k_core_ops) / sizeof(k_core_ops[0]))
 
 static int core_list_procedures(iot_client_t *c, iot_json_writer_t *out)
@@ -273,6 +274,40 @@ static int core_list_procedures(iot_client_t *c, iot_json_writer_t *out)
     return IOT_RES_OK;
 }
 
+/* tags-write padrão (contracts A.4.16), para firmware sem tag gravável:
+ * aceita a versão e recusa cada tag pedida como UNKNOWN_TAG. */
+static int core_tags_write(const iot_request_t *req, iot_json_writer_t *out)
+{
+    int64_t version = 0;
+    const iot_json_ref_t desired = iot_json_get(req->doc, req->payload, "desired");
+    if (iot_json_get_i64(req->doc, iot_json_get(req->doc, req->payload, "version"), &version) != IOT_OK ||
+        version < 1 || iot_json_type(req->doc, desired) != IOT_JSON_OBJECT || iot_json_size(req->doc, desired) < 1) {
+        return iot_reply_error(out, IOT_RES_BAD_REQUEST, "INVALID_PAYLOAD", "version/desired");
+    }
+    iot_jw_obj_begin(out);
+    iot_jw_key(out, "appliedVersion");
+    iot_jw_i64(out, version);
+    iot_jw_key(out, "rejected");
+    iot_jw_arr_begin(out);
+    iot_json_ref_t key = IOT_JSON_NONE;
+    iot_json_ref_t val;
+    while (iot_json_next_member(req->doc, desired, &key, &val)) {
+        char k[65];
+        if (iot_json_get_str(req->doc, key, k, sizeof(k), NULL) != IOT_OK) {
+            continue; /* chave longa demais: não é tag de ninguém */
+        }
+        iot_jw_obj_begin(out);
+        iot_jw_key(out, "key");
+        iot_jw_str(out, k);
+        iot_jw_key(out, "reason");
+        iot_jw_str(out, "UNKNOWN_TAG");
+        iot_jw_obj_end(out);
+    }
+    iot_jw_arr_end(out);
+    iot_jw_obj_end(out);
+    return IOT_RES_OK;
+}
+
 static int core_dispatch(iot_client_t *c, const iot_request_t *req, iot_json_writer_t *out, bool *found)
 {
     *found = true;
@@ -297,6 +332,9 @@ static int core_dispatch(iot_client_t *c, const iot_request_t *req, iot_json_wri
     }
     if (strcmp(req->op, "ota-notification") == 0 || strcmp(req->op, "settings-write") == 0) {
         return iot_reply_error(out, IOT_RES_BAD_REQUEST, "NOT_SUPPORTED", "op sem implementação neste firmware");
+    }
+    if (strcmp(req->op, "tags-write") == 0) {
+        return core_tags_write(req, out);
     }
     if (strcmp(req->op, "settings-read") == 0) {
         iot_jw_obj_begin(out);

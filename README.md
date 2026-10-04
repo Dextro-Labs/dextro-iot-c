@@ -137,6 +137,9 @@ for (;;) { iot_step(&client); vTaskDelay(pdMS_TO_TICKS(20)); }
   - `list-procedures`, `get-status` (`status_fill`), `outbox-notification`
     (responde 204 e emite `IOT_EVENT_OUTBOX_NOTIFIED`) e `settings-read`.
   - `settings-write` e `ota-notification` respondem 400 `NOT_SUPPORTED`.
+  - `tags-write` (obrigatória) aceita a versão e recusa cada tag pedida com
+    `UNKNOWN_TAG`, que é o certo para firmware sem tag gravável; payload
+    inválido dá 400 `INVALID_PAYLOAD`.
   - Uma entrada da aplicação com o mesmo nome substitui a do core.
 - **Remote-procedures:** `iot_call_service` não bloqueia. A resposta chega por
   callback; o timeout local dá 504 e a queda da sessão dá 503 na hora.

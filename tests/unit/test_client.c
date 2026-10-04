@@ -466,6 +466,7 @@ static void test_list_procedures(void)
     char reply[2048];
     call_procedure(make_request("list-procedures", "{}", wall_now(), "0.5"), reply, sizeof(reply));
     TEST_ASSERT_NOT_NULL(strstr(reply, "{\"op\":\"get-status\",\"version\":1}"));
+    TEST_ASSERT_NOT_NULL(strstr(reply, "{\"op\":\"tags-write\",\"version\":1}"));
     TEST_ASSERT_NOT_NULL(strstr(reply, "{\"op\":\"relay-set\",\"version\":2}"));
     TEST_ASSERT_NOT_NULL(strstr(reply, "\"deviceType\":\"gateway-g1\""));
     TEST_ASSERT_NOT_NULL(strstr(reply, "\"contractVersion\":1"));
@@ -479,6 +480,24 @@ static void test_outbox_notification_is_204(void)
                    reply, sizeof(reply));
     TEST_ASSERT_NOT_NULL(strstr(reply, "\"payload\":{},\"rescode\":204"));
     TEST_ASSERT_EQUAL_INT(1, events[IOT_EVENT_OUTBOX_NOTIFIED]);
+}
+
+static void test_tags_write_default_rejects_each_tag(void)
+{
+    bring_online();
+    char reply[2048];
+    call_procedure(make_request("tags-write", "{\"version\":3,\"desired\":{\"rele_1\":false,\"modo\":\"auto\"}}",
+                                wall_now(), "0.5"),
+                   reply, sizeof(reply));
+    TEST_ASSERT_NOT_NULL(strstr(reply, "\"rescode\":200"));
+    TEST_ASSERT_NOT_NULL(strstr(reply, "\"appliedVersion\":3"));
+    TEST_ASSERT_NOT_NULL(strstr(reply, "{\"key\":\"rele_1\",\"reason\":\"UNKNOWN_TAG\"}"));
+    TEST_ASSERT_NOT_NULL(strstr(reply, "{\"key\":\"modo\",\"reason\":\"UNKNOWN_TAG\"}"));
+
+    call_procedure(make_request("tags-write", "{\"version\":0,\"desired\":{}}", wall_now(), "0.5"), reply,
+                   sizeof(reply));
+    TEST_ASSERT_NOT_NULL(strstr(reply, "\"rescode\":400"));
+    TEST_ASSERT_NOT_NULL(strstr(reply, "\"error\":\"INVALID_PAYLOAD\""));
 }
 
 static void test_unknown_op_is_404(void)
@@ -788,6 +807,7 @@ int main(void)
     RUN_TEST(test_connect_publishes_will_and_online);
     RUN_TEST(test_get_status_echoes_routing);
     RUN_TEST(test_list_procedures);
+    RUN_TEST(test_tags_write_default_rejects_each_tag);
     RUN_TEST(test_outbox_notification_is_204);
     RUN_TEST(test_unknown_op_is_404);
     RUN_TEST(test_expired_request_is_504_not_silent);
